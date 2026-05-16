@@ -1,77 +1,140 @@
-// agent_demo shows how to build a minimal ReAct agent using graphflow,
-// including how to observe each Thought / Action / Observation step via Hook.
-// Run: go run ./examples/agent_demo
+// agent_demo shows how to build a ReAct agent using graphflow.
+//
+//	Mock mode (default):        go run ./examples/agent_demo
+//	From config file:           go run ./examples/agent_demo -config config/llmgate.toml
+//	From config + pin provider: go run ./examples/agent_demo -config config/llmgate.toml -provider deepseek
+//	From env vars only:         DEEPSEEK_KEY=sk-xxx go run ./examples/agent_demo -env
+//	From env vars + provider:   DEEPSEEK_KEY=sk-xxx go run ./examples/agent_demo -env -provider deepseek
 package main
 
 import (
 	"context"
+	"flag"
 	"fmt"
 	"log"
+	"os"
 	"strings"
 	"time"
 
 	"github.com/wzhongyou/graphflow/agent"
+	llmgate_adapter "github.com/wzhongyou/graphflow/agent/llmgate"
 	"github.com/wzhongyou/graphflow/graph"
+
+	"github.com/wzhongyou/llmgate/sdk"
+)
+
+var (
+	configPath = flag.String("config", "", "Path to llmgate TOML config file")
+	envMode    = flag.Bool("env", false, "Load providers from environment variables (DEEPSEEK_KEY, etc.)")
+	provider   = flag.String("provider", "", "Provider to pin to (e.g. deepseek, glm)")
+	question   = flag.String("q", "What is 123 * 456?", "User question")
 )
 
 func main() {
+	flag.Parse()
 	ctx := context.Background()
 
-	// 1. Wire up LLM and tools.
-	llm := agent.NewLLMNode(agent.LLMNodeConfig{
-		Model:        &mockLLM{},
-		SystemPrompt: "You are a helpful assistant.",
-	})
-	tools := agent.NewToolRegistry()
-	tools.Register(&calculatorTool{})
-	toolNode := agent.NewToolNode(tools.List()...)
+	llmModel := buildLLM()
+	tools := []agent.Tool{&agent.CalculatorTool{}}
 
-	// 2. Build the ReAct graph: llm -> tool -> llm (loop until no tool calls).
-	g := graph.NewGraph[*agent.MessageState]("react-agent")
-	g.AddNode("llm", llm.Run)
-	g.AddNode("tool", toolNode.Run)
-	g.SetEntryPoint("llm")
-	g.AddCondition("llm", graph.Condition[*agent.MessageState]{
-		If:     hasPendingToolCalls,
-		Target: "tool",
+	// Build and run a ReAct agent in 3 lines.
+	ag := agent.NewReActAgent(agent.ReActAgentConfig{
+		Name:         "react-agent",
+		LLM:          llmModel,
+		SystemPrompt: "You are a helpful assistant. Use the calculator tool for math.",
+		Tools:        tools,
+		MaxSteps:     20,
 	})
-	g.AddEdge("tool", "llm")
-	g.SetMaxIterations("llm", 20)
-
-	if err := g.Compile(); err != nil {
+	g, err := ag.BuildGraph()
+	if err != nil {
 		log.Fatal(err)
 	}
 
-	// 3. Compose hooks.
-	//    ReactHook prints the Thought/Action/Observation chain to stdout.
-	//    You can add more hooks (e.g. OTel, logging) via ComposeHooks.
-	hook := graph.ComposeHooks(
-		&reactHook{},
-		// graph.WithHook(&myOTelHook{}) ← add more here
-	)
-
-	// 4. Run with hook attached.
 	engine := graph.NewEngine(g)
 	result, err := engine.Run(ctx, &agent.MessageState{
-		Messages: []agent.Message{
-			{Role: agent.RoleUser, Content: "What is 123 * 456?"},
-		},
+		Messages: []agent.Message{{Role: agent.RoleUser, Content: *question}},
 		MaxSteps: 20,
-	}, graph.WithHook(hook))
+	}, graph.WithHook(graph.ComposeHooks(&reactHook{})))
 	if err != nil {
 		log.Fatal(err)
 	}
 
 	last := result.FinalState.Messages[len(result.FinalState.Messages)-1]
-	fmt.Printf("\n[done] steps=%d duration=%s\n", result.TotalSteps, result.TotalDuration.Round(time.Millisecond))
+	fmt.Printf("\n[done] steps=%d  duration=%s  tokens=%d\n",
+		result.TotalSteps, result.TotalDuration.Round(time.Millisecond), result.FinalState.TotalTokens)
 	fmt.Println("Assistant:", last.Content)
 }
 
+// ── LLM setup ──────────────────────────────────────────────────────────────────
+
+func buildLLM() agent.LLMModel {
+	// 1. Explicit config file path.
+	if *configPath != "" {
+		return fromConfig(*configPath)
+	}
+
+	// 2. Auto-detect config/llmgate.toml.
+	if _, err := os.Stat("config/llmgate.toml"); err == nil {
+		return fromConfig("config/llmgate.toml")
+	}
+	if _, err := os.Stat("llmgate.toml"); err == nil {
+		return fromConfig("llmgate.toml")
+	}
+
+	// 3. Environment variables (DEEPSEEK_KEY etc.).
+	if *envMode || hasLLMKeyEnv() {
+		return fromEnv()
+	}
+
+	// 4. Fallback to mock.
+	fmt.Println("💡 Using mock LLM (no config or API keys found).")
+	fmt.Println("   For real models:")
+	fmt.Println("     cp config/llmgate.toml.example config/llmgate.toml    # edit keys, then:")
+	fmt.Println("     go run ./examples/agent_demo")
+	fmt.Println("   Or use env vars:")
+	fmt.Println("     DEEPSEEK_KEY=sk-xxx go run ./examples/agent_demo -env -provider deepseek")
+	fmt.Println()
+	return &mockLLM{}
+}
+
+func fromConfig(path string) agent.LLMModel {
+	fmt.Printf("🔗 config: %s\n", path)
+	gw, err := sdk.NewFromFile(path)
+	if err != nil {
+		log.Fatalf("llmgate: %v", err)
+	}
+	return adapterFromGW(gw)
+}
+
+func fromEnv() agent.LLMModel {
+	fmt.Println("🔗 loading from environment variables")
+	gw := sdk.New()
+	return adapterFromGW(gw)
+}
+
+func adapterFromGW(gw *sdk.Gateway) agent.LLMModel {
+	if *provider != "" {
+		fmt.Printf("   provider: %s (pinned)\n", *provider)
+		return llmgate_adapter.New(gw, llmgate_adapter.Config{Provider: *provider})
+	}
+	fmt.Println("   routing: using config strategy")
+	return llmgate_adapter.NewWithStrategy(gw)
+}
+
+func hasLLMKeyEnv() bool {
+	for _, v := range []string{
+		"DEEPSEEK_KEY", "OPENAI_KEY", "GLM_KEY", "ANTHROPIC_KEY",
+		"QWEN_KEY", "KIMI_KEY", "DOUBAO_KEY", "GEMINI_KEY",
+		"GROK_KEY", "MINIMAX_KEY", "STEPFUN_KEY",
+	} {
+		if os.Getenv(v) != "" {
+			return true
+		}
+	}
+	return false
+}
+
 // ── ReAct hook ────────────────────────────────────────────────────────────────
-//
-// reactHook implements graph.Hook[*agent.MessageState].
-// It prints each Thought (LLM decision), Action (tool call), and
-// Observation (tool result) as they happen — the canonical ReAct trace.
 
 type reactHook struct{}
 
@@ -80,46 +143,35 @@ func (h *reactHook) OnGraphStart(_ context.Context, name string, s *agent.Messag
 		fmt.Printf("[%s] question: %s\n", name, s.Messages[len(s.Messages)-1].Content)
 	}
 }
-
 func (h *reactHook) OnGraphEnd(_ context.Context, _ string, _ *agent.MessageState, err error) {
 	if err != nil {
 		fmt.Printf("[graph] failed: %v\n", err)
 	}
 }
-
 func (h *reactHook) OnNodeStart(_ context.Context, nodeName string, _ *agent.MessageState) {
-	fmt.Printf("  → [%s] ...\n", nodeName)
+	fmt.Printf("  -> [%s] ...\n", nodeName)
 }
-
-// OnNodeEnd is where the interesting ReAct tracing happens:
-// after the llm node we see Thought / tool call decision,
-// after the tool node we see the Observation.
 func (h *reactHook) OnNodeEnd(_ context.Context, nodeName string, s *agent.MessageState, err error, dur time.Duration) {
 	if err != nil {
-		fmt.Printf("  ✗ [%s] error: %v (%s)\n", nodeName, err, dur)
+		fmt.Printf("  x [%s] error: %v (%s)\n", nodeName, err, dur)
 		return
 	}
 	if len(s.Messages) == 0 {
 		return
 	}
 	last := s.Messages[len(s.Messages)-1]
-
 	switch nodeName {
 	case "llm":
 		if len(last.ToolCalls) > 0 {
-			// Thought → Action
 			calls := make([]string, len(last.ToolCalls))
 			for i, tc := range last.ToolCalls {
 				calls[i] = fmt.Sprintf("%s(%v)", tc.Name, tc.Arguments)
 			}
-			fmt.Printf("  [thought] → Action: %s  (%s)\n", strings.Join(calls, ", "), dur)
+			fmt.Printf("  [thought] -> Action: %s  (%s)\n", strings.Join(calls, ", "), dur)
 		} else {
-			// Thought → Final Answer
-			fmt.Printf("  [thought] → Answer: %s  (%s)\n", last.Content, dur)
+			fmt.Printf("  [thought] -> Answer: %s  (%s)\n", last.Content, dur)
 		}
-
 	case "tool":
-		// Observation: find the tool result messages appended after the tool calls
 		for _, msg := range s.Messages {
 			if msg.Role == agent.RoleTool {
 				fmt.Printf("  [observation] %s: %s\n", msg.ToolName, msg.Content)
@@ -127,58 +179,30 @@ func (h *reactHook) OnNodeEnd(_ context.Context, nodeName string, s *agent.Messa
 		}
 	}
 }
-
 func (h *reactHook) OnRetry(_ context.Context, nodeName string, attempt int, lastErr error) {
-	fmt.Printf("  ↺ [%s] retry %d: %v\n", nodeName, attempt, lastErr)
+	fmt.Printf("  retry [%s] %d: %v\n", nodeName, attempt, lastErr)
 }
 
-// ── Condition ─────────────────────────────────────────────────────────────────
-
-func hasPendingToolCalls(_ context.Context, s *agent.MessageState) bool {
-	if len(s.Messages) == 0 {
-		return false
-	}
-	last := s.Messages[len(s.Messages)-1]
-	return last.Role == agent.RoleAssistant && len(last.ToolCalls) > 0
-}
-
-// ── Mock LLM (replace with a real client) ────────────────────────────────────
+// ── Mock LLM ──────────────────────────────────────────────────────────────────
 
 type mockLLM struct{}
 
-func (m *mockLLM) Chat(_ context.Context, msgs []agent.Message) (*agent.Message, error) {
-	for _, msg := range msgs {
+func (m *mockLLM) Chat(_ context.Context, req *agent.ChatRequest) (*agent.ChatResponse, error) {
+	for _, msg := range req.Messages {
 		if msg.Role == agent.RoleTool {
-			return &agent.Message{Role: agent.RoleAssistant, Content: "The answer is 56088."}, nil
+			return &agent.ChatResponse{Content: "The answer is 56088.", FinishReason: "stop"}, nil
 		}
 	}
-	return &agent.Message{
-		Role: agent.RoleAssistant,
-		ToolCalls: []agent.ToolCall{
-			{ID: "c1", Name: "calculator", Arguments: map[string]any{"expr": "123 * 456"}},
-		},
+	return &agent.ChatResponse{
+		ToolCalls:    []agent.ToolCall{{ID: "c1", Name: "calculator", Arguments: map[string]any{"expression": "123 * 456"}}},
+		FinishReason: "tool_calls",
 	}, nil
 }
 
-func (m *mockLLM) ChatStream(_ context.Context, _ []agent.Message) (<-chan string, error) {
-	return nil, nil
+func (m *mockLLM) ChatStream(_ context.Context, _ *agent.ChatRequest) (<-chan *agent.StreamChunk, error) {
+	return nil, fmt.Errorf("streaming not implemented in mock")
 }
 
-// ── Calculator tool ───────────────────────────────────────────────────────────
-
-type calculatorTool struct{}
-
-func (c *calculatorTool) Name() string        { return "calculator" }
-func (c *calculatorTool) Description() string { return "Evaluates a simple arithmetic expression." }
-func (c *calculatorTool) Parameters() map[string]any {
-	return map[string]any{
-		"type": "object",
-		"properties": map[string]any{
-			"expr": map[string]any{"type": "string", "description": "e.g. 123 * 456"},
-		},
-		"required": []string{"expr"},
-	}
-}
-func (c *calculatorTool) Execute(_ context.Context, args map[string]any) (string, error) {
-	return fmt.Sprintf("result of %q = 56088 (stub)", args["expr"]), nil
+func init() {
+	os.Setenv("LLMGATE_QUIET", "1")
 }

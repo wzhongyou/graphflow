@@ -1,0 +1,31 @@
+# Graphflow LLM Configuration
+# cp llmgate.toml.example llmgate.toml, then fill in your API keys.
+#
+# Two ways to configure:
+#   1. Direct key:   key = "sk-xxx"
+#   2. Env variable: key = "${DEEPSEEK_KEY}"
+#
+# To run the agent demo with a real model:
+#   go run ./examples/agent_demo/ -config config/llmgate.toml -model deepseek
+
+# ── Providers (uncomment the one you want to use) ─────────────────────────────
+[[providers]]
+name = "deepseek"
+key = "${DEEPSEEK_KEY}"
+
+# [[providers]]
+# name = "openai"
+# key = "${OPENAI_KEY}"
+#
+# [[providers]]
+# name = "anthropic"
+# key = "${ANTHROPIC_KEY}"
+#
+# [[providers]]
+# name = "glm"
+# key = "${GLM_KEY}"
+
+# ── Routing (optional) ────────────────────────────────────────────────────────
+[strategy]
+primary = "deepseek"
+# fallback = ["glm", "minimax"]

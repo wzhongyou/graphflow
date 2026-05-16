@@ -15,13 +15,15 @@ const (
 
 // Message is a single entry in a conversation.
 type Message struct {
-	ID        string         `json:"id"`
-	Role      Role           `json:"role"`
-	Content   string         `json:"content"`
-	ToolCalls []ToolCall     `json:"tool_calls,omitempty"`
-	ToolName  string         `json:"tool_name,omitempty"`
-	Metadata  map[string]any `json:"metadata,omitempty"`
-	Timestamp time.Time      `json:"timestamp"`
+	ID               string         `json:"id"`
+	Role             Role           `json:"role"`
+	Content          string         `json:"content"`
+	ReasoningContent string         `json:"reasoning_content,omitempty"` // thinking mode reasoning
+	ToolCalls        []ToolCall     `json:"tool_calls,omitempty"`
+	ToolCallID       string         `json:"tool_call_id,omitempty"` // matches ToolCall.ID for tool results
+	ToolName         string         `json:"tool_name,omitempty"`
+	Metadata         map[string]any `json:"metadata,omitempty"`
+	Timestamp        time.Time      `json:"timestamp"`
 }
 
 // ToolCall represents a single tool invocation and its result.
@@ -41,5 +43,6 @@ type MessageState struct {
 	NextAgent       string         `json:"next_agent"`
 	StepCount       int            `json:"step_count"`
 	MaxSteps        int            `json:"max_steps"`
+	TotalTokens     int            `json:"total_tokens"`
 	Metadata        map[string]any `json:"metadata"`
 }

@@ -27,6 +27,7 @@ Thumbs.db
 *.env
 .env.*
 config.local.*
+config/llmgate.toml
 
 # Research notes — local only, not published
 /research/

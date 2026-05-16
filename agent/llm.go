@@ -2,13 +2,52 @@ package agent
 
 import "context"
 
+// ChatRequest is the input to an LLM call.
+type ChatRequest struct {
+	Messages     []Message
+	Tools        []ToolDef
+	Temperature  *float64
+	MaxTokens    *int
+	ThinkingType string // "disabled" to disable reasoning/thinking mode
+}
+
+// ChatResponse is the output from a non-streaming LLM call.
+type ChatResponse struct {
+	Content          string
+	ReasoningContent string
+	ToolCalls        []ToolCall
+	FinishReason     string
+	Usage            *Usage
+}
+
+// Usage reports token consumption for a single LLM call.
+type Usage struct {
+	InputTokens  int
+	OutputTokens int
+	TotalTokens  int
+}
+
+// StreamChunk is a single piece of a streaming LLM response.
+type StreamChunk struct {
+	Content          string
+	ReasoningContent string
+	ToolCalls        []ToolCall
+	FinishReason     string
+	Usage            *Usage
+	Error            error
+}
+
+// ToolDef describes a tool available to the LLM.
+type ToolDef struct {
+	Name        string
+	Description string
+	Parameters  map[string]any // JSON Schema for the tool's arguments
+}
+
 // LLMModel is the interface every LLM backend must satisfy.
 type LLMModel interface {
-	// Chat sends a list of messages and returns the assistant reply.
-	Chat(ctx context.Context, messages []Message) (*Message, error)
-
-	// ChatStream sends messages and streams token-by-token output.
-	ChatStream(ctx context.Context, messages []Message) (<-chan string, error)
+	Chat(ctx context.Context, req *ChatRequest) (*ChatResponse, error)
+	ChatStream(ctx context.Context, req *ChatRequest) (<-chan *StreamChunk, error)
 }
 
 // Embedder converts text into a dense vector.
@@ -24,9 +63,20 @@ type VectorStore interface {
 
 // SearchResult is a single hit from a vector search.
 type SearchResult struct {
-	ID       string         `json:"id"`
-	Score    float32        `json:"score"`
-	Metadata map[string]any `json:"metadata"`
+	ID       string
+	Score    float32
+	Metadata map[string]any
 }
 
-// TODO(A2): add function-calling / tool-use support to LLMModel
+// ToolDefs extracts ToolDef values from a slice of Tools.
+func ToolDefs(tools []Tool) []ToolDef {
+	defs := make([]ToolDef, len(tools))
+	for i, t := range tools {
+		defs[i] = ToolDef{
+			Name:        t.Name(),
+			Description: t.Description(),
+			Parameters:  t.Parameters(),
+		}
+	}
+	return defs
+}

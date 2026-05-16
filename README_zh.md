@@ -55,36 +55,69 @@
 
 ## 快速开始
 
+### LLM 配置
+
+Graphflow 通过 [llmgate](https://github.com/wzhongyou/llmgate) 接入 LLM（19 个供应商）。
+
+```bash
+# 方式一：配置文件（推荐）
+cp config/llmgate.toml.example config/llmgate.toml   # 填入 API key
+go run ./examples/agent_demo
+
+# 方式二：环境变量
+export DEEPSEEK_KEY="sk-xxx"
+go run ./examples/agent_demo -env -provider deepseek
+
+# 方式三：Mock 模式（无需 API key）
+go run ./examples/agent_demo
+```
+
 ### ReAct Agent
+
+使用 `ReActAgent.BuildGraph()` 一行构建：
 
 ```go
 import (
     "github.com/wzhongyou/graphflow/agent"
+    llmgate_adapter "github.com/wzhongyou/graphflow/agent/llmgate"
     "github.com/wzhongyou/graphflow/graph"
+    "github.com/wzhongyou/llmgate/sdk"
 )
 
-// 1. 构建节点
-llm      := agent.NewLLMNode(agent.LLMNodeConfig{Model: myLLM})
-toolNode := agent.NewToolNode(calculatorTool, searchTool)
+gw, _ := sdk.NewFromFile("config/llmgate.toml")
+adapter := llmgate_adapter.New(gw, llmgate_adapter.Config{Provider: "deepseek"})
 
-// 2. 连接 ReAct 图
+ag := agent.NewReActAgent(agent.ReActAgentConfig{
+    Name:         "react-agent",
+    LLM:          adapter,
+    SystemPrompt: "你是一个有用的助手。",
+    Tools:        []agent.Tool{&agent.CalculatorTool{}},
+})
+g, _ := ag.BuildGraph()
+
+engine := graph.NewEngine(g)
+result, _ := engine.Run(ctx, &agent.MessageState{
+    Messages: []agent.Message{{Role: agent.RoleUser, Content: "123 * 456 是多少？"}},
+}, graph.WithHook(myReactHook))
+```
+
+也可以手动搭图，获得更多控制权：
+
+```go
+llm      := agent.NewLLMNode(agent.LLMNodeConfig{Model: adapter, Tools: tools})
+toolNode := agent.NewToolNode(tools...)
+
 g := graph.NewGraph[*agent.MessageState]("react-agent")
 g.AddNode("llm", llm.Run)
 g.AddNode("tool", toolNode.Run)
 g.SetEntryPoint("llm")
 g.AddCondition("llm", graph.Condition[*agent.MessageState]{
-    If:     hasPendingToolCalls,
+    If:     agent.HasPendingToolCalls,
     Target: "tool",
 })
 g.AddEdge("tool", "llm")   // 回边，形成循环
 g.SetMaxIterations("llm", 20)
 g.Compile()
-
-// 3. 用 Hook 追踪 Thought / Action / Observation
-engine := graph.NewEngine(g)
-result, _ := engine.Run(ctx, &agent.MessageState{
-    Messages: []agent.Message{{Role: agent.RoleUser, Content: "123 * 456 是多少？"}},
-}, graph.WithHook(myReactHook))
 ```
 
 ### 用 Hook 观测 ReAct 循环
@@ -186,12 +219,16 @@ graphflow/
 │   ├── state.go            # MessageState、Message、ToolCall
 │   ├── llm.go              # LLMModel、Embedder、VectorStore 接口
 │   ├── nodes.go            # LLMNode、ToolNode、VectorRetrieveNode、HumanInputNode
-│   ├── tools.go            # Tool 接口、ToolRegistry
+│   ├── tools.go            # Tool 接口、ToolRegistry、CalculatorTool
 │   ├── agents.go           # ReActAgent、RAGAgent、SupervisorAgent
-│   └── memory.go           # ShortTermMemory、LongTermMemory
+│   ├── memory.go           # ShortTermMemory、LongTermMemory
+│   └── llmgate/            # llmgate 适配器（实现 LLMModel 接口）
+│
+├── config/                 # 配置模板
+│   └── llmgate.toml.example
 │
 └── examples/
-    └── agent_demo/         # 带 Hook 追踪的 ReAct Agent 示例
+    └── agent_demo/         # 带 Hook 追踪的 ReAct Agent 示例（mock + 真实 LLM）
 ```
 
 ---
@@ -212,16 +249,18 @@ graphflow/
 - [ ] YAML 配置 + LoadFromFile
 
 ### Agent 层（agent/）
-- [x] MessageState、Message、ToolCall 类型
-- [x] LLMModel / Embedder / VectorStore 接口
-- [x] LLMNode、ToolNode 等节点骨架
-- [x] ToolRegistry
-- [ ] LLMNode 真正实现（A3）
-- [ ] ToolNode 真正实现（A3）
-- [ ] ReActAgent.BuildGraph（A6）
-- [ ] RAGAgent.BuildGraph（A7）
+- [x] MessageState、Message、ToolCall 类型（A1）
+- [x] LLMModel / Embedder / VectorStore 接口（A2）
+- [x] LLMNode、ToolNode 真实实现，支持 tool calling（A3）
+- [x] VectorRetrieveNode、HumanInputNode（A3）
+- [x] Tool 接口 + ToolRegistry + CalculatorTool（A4）
+- [x] ShortTermMemory、LongTermMemory（A5）
+- [x] ReActAgent.BuildGraph（A6）
+- [x] RAGAgent.BuildGraph（A7）
+- [x] llmgate 适配器 — 19 个供应商、降级、策略路由
 - [ ] SupervisorAgent.BuildGraph（A8）
-- [ ] 内存管理（A5）
+- [ ] 流式 Agent + SSE（A9）
+- [ ] Structured Output（A10）
 
 ---
 

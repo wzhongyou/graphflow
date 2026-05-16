@@ -1,0 +1,4 @@
+github.com/BurntSushi/toml v1.6.0 h1:dRaEfpa2VI55EwlIW72hMRHdWouJeRF7TPYhI+AUQjk=
+github.com/BurntSushi/toml v1.6.0/go.mod h1:ukJfTF/6rtPPRCnwkur4qwRxa8vTRFBF0uk2lLoLwho=
+github.com/wzhongyou/llmgate v0.2.1 h1:hpJWOZjxoYJZMKDKPipsAQCpqXipDCVX22fg0RgvOlw=
+github.com/wzhongyou/llmgate v0.2.1/go.mod h1:W8+EkLmSryWTEtJQpebYNBTM4Qh5rA6P/d5Z3kLr4QE=

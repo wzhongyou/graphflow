@@ -55,36 +55,69 @@ The `graph/` package is **AI-agnostic** — it works equally well for business p
 
 ## Quick Start
 
+### LLM Configuration
+
+Graphflow uses [llmgate](https://github.com/wzhongyou/llmgate) as the LLM gateway (19 providers).
+
+```bash
+# Option 1: config file (recommended)
+cp config/llmgate.toml.example config/llmgate.toml   # edit your API keys
+go run ./examples/agent_demo
+
+# Option 2: environment variables
+export DEEPSEEK_KEY="sk-xxx"
+go run ./examples/agent_demo -env -provider deepseek
+
+# Option 3: mock mode (no API key needed)
+go run ./examples/agent_demo
+```
+
 ### ReAct Agent
+
+Use `ReActAgent.BuildGraph()` for zero-boilerplate setup:
 
 ```go
 import (
     "github.com/wzhongyou/graphflow/agent"
+    llmgate_adapter "github.com/wzhongyou/graphflow/agent/llmgate"
     "github.com/wzhongyou/graphflow/graph"
+    "github.com/wzhongyou/llmgate/sdk"
 )
 
-// 1. Build nodes
-llm      := agent.NewLLMNode(agent.LLMNodeConfig{Model: myLLM})
-toolNode := agent.NewToolNode(calculatorTool, searchTool)
+gw, _ := sdk.NewFromFile("config/llmgate.toml")
+adapter := llmgate_adapter.New(gw, llmgate_adapter.Config{Provider: "deepseek"})
 
-// 2. Wire the ReAct graph
+ag := agent.NewReActAgent(agent.ReActAgentConfig{
+    Name:         "react-agent",
+    LLM:          adapter,
+    SystemPrompt: "You are a helpful assistant.",
+    Tools:        []agent.Tool{&agent.CalculatorTool{}},
+})
+g, _ := ag.BuildGraph()
+
+engine := graph.NewEngine(g)
+result, _ := engine.Run(ctx, &agent.MessageState{
+    Messages: []agent.Message{{Role: agent.RoleUser, Content: "What is 123 * 456?"}},
+}, graph.WithHook(myReactHook))
+```
+
+Or build the graph by hand for full control:
+
+```go
+llm      := agent.NewLLMNode(agent.LLMNodeConfig{Model: adapter, Tools: tools})
+toolNode := agent.NewToolNode(tools...)
+
 g := graph.NewGraph[*agent.MessageState]("react-agent")
 g.AddNode("llm", llm.Run)
 g.AddNode("tool", toolNode.Run)
 g.SetEntryPoint("llm")
 g.AddCondition("llm", graph.Condition[*agent.MessageState]{
-    If:     hasPendingToolCalls,
+    If:     agent.HasPendingToolCalls,
     Target: "tool",
 })
 g.AddEdge("tool", "llm")   // loop back
 g.SetMaxIterations("llm", 20)
 g.Compile()
-
-// 3. Run with a hook that traces Thought / Action / Observation
-engine := graph.NewEngine(g)
-result, _ := engine.Run(ctx, &agent.MessageState{
-    Messages: []agent.Message{{Role: agent.RoleUser, Content: "What is 123 * 456?"}},
-}, graph.WithHook(myReactHook))
 ```
 
 ### Observing the ReAct loop with Hook
@@ -187,12 +220,16 @@ graphflow/
 │   ├── state.go            # MessageState, Message, ToolCall
 │   ├── llm.go              # LLMModel, Embedder, VectorStore interfaces
 │   ├── nodes.go            # LLMNode, ToolNode, VectorRetrieveNode, HumanInputNode
-│   ├── tools.go            # Tool interface, ToolRegistry
+│   ├── tools.go            # Tool interface, ToolRegistry, CalculatorTool
 │   ├── agents.go           # ReActAgent, RAGAgent, SupervisorAgent
-│   └── memory.go           # ShortTermMemory, LongTermMemory
+│   ├── memory.go           # ShortTermMemory, LongTermMemory
+│   └── llmgate/            # llmgate adapter (LLMModel impl)
+│
+├── config/                 # Configuration templates
+│   └── llmgate.toml.example
 │
 └── examples/
-    └── agent_demo/         # ReAct agent with Hook tracing
+    └── agent_demo/         # ReAct agent with Hook tracing (mock + real LLM)
 ```
 
 ---
@@ -213,16 +250,18 @@ graphflow/
 - [ ] YAML config + LoadFromFile
 
 ### Agent (agent/)
-- [x] MessageState, Message, ToolCall types
-- [x] LLMModel / Embedder / VectorStore interfaces
-- [x] LLMNode, ToolNode, VectorRetrieveNode, HumanInputNode stubs
-- [x] ToolRegistry
-- [ ] LLMNode — real implementation (A3)
-- [ ] ToolNode — real implementation (A3)
-- [ ] ReActAgent.BuildGraph (A6)
-- [ ] RAGAgent.BuildGraph (A7)
+- [x] MessageState, Message, ToolCall types (A1)
+- [x] LLMModel / Embedder / VectorStore interfaces (A2)
+- [x] LLMNode, ToolNode — real implementation with tool calling (A3)
+- [x] VectorRetrieveNode, HumanInputNode (A3)
+- [x] Tool interface + ToolRegistry + CalculatorTool (A4)
+- [x] ShortTermMemory, LongTermMemory (A5)
+- [x] ReActAgent.BuildGraph (A6)
+- [x] RAGAgent.BuildGraph (A7)
+- [x] llmgate adapter — 19 providers, fallback, strategy routing
 - [ ] SupervisorAgent.BuildGraph (A8)
-- [ ] Memory management (A5)
+- [ ] Stream agent + SSE (A9)
+- [ ] Structured Output (A10)
 
 ---
 
