@@ -28,3 +28,4 @@ Thumbs.db
 .env.*
 config.local.*
 config/llmgate.toml
+supervisor
