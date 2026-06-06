@@ -4,7 +4,7 @@ go 1.25.7
 
 require (
 	github.com/mark3labs/mcp-go v0.54.1
-	github.com/wzhongyou/llmgate v0.2.1
+	github.com/wzhongyou/llmgate v0.3.0
 	go.opentelemetry.io/otel v1.44.0
 	go.opentelemetry.io/otel/trace v1.44.0
 )
